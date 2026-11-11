@@ -1,8 +1,12 @@
 """UIFO (Uniform Interferometer Field Optimization) problems with power constraints."""
 
+import time
+from contextlib import contextmanager
+
 import jax
 import numpy as np
 from jaxtyping import Array, Float
+from differometor.build import LINKING_FUNCTIONS
 from differometor.setups import uifo, constrain_inter_grid_cell_spaces
 from differometor.simulate import run_setups, simulate, run_build_step
 from differometor.utils import (
@@ -11,7 +15,53 @@ from differometor.utils import (
     calculate_powers,
 )
 
+
+def _print_time(label, t0, out=None):
+    """TIMING (temporary): print seconds since t0. Waits for JAX results in `out` first,
+    since JAX returns before the computation has finished."""
+    if out is not None:
+        jax.block_until_ready(out)
+    print(f"[uifo timing] {label}: {time.time() - t0:.3f} s", flush=True)
+
 from ..base_problem import DEFAULT_SIGNAL_FLOOR, OpticalSetupProblem, register_problem
+from .uifo_cache import cached_run_setups
+
+
+# ---------------------------------------------------------------------------
+# Per-problem linking functions
+# ---------------------------------------------------------------------------
+# differometor keeps the formulas of linked settings (e.g. amplitude = sqrt(power))
+# in ONE global list, LINKING_FUNCTIONS (differometor/build.py:79):
+#   * building a setup APPENDS its formulas and stores only their positions in the
+#     setup's arrays (build.py:401-402; no formulas -> identity, position 0, :1414-1418);
+#   * simulate() READS the whole list every time it is recorded/traced (simulate.py:278).
+# So each UIFOProblem keeps its own copy of the list and puts it back exactly when
+# simulate() runs. The global list is then only a temporary workbench, and emptying
+# it before each new problem is safe for every UIFOProblem.
+# Limit: other problem types (e.g. dfbench's VoyagerProblem) don't keep a copy; one
+# built before a UIFOProblem in the same process could break if traced afterwards.
+_LINKING_FUNCTIONS_AT_IMPORT = len(LINKING_FUNCTIONS)
+
+
+def _reset_linking_functions():
+    """Cut the global list back to how it was at import (normally empty).
+
+    In place (del / slice assignment), never rebinding the name: simulate() holds a
+    reference to this very list object, a new list would not be seen by it.
+    """
+    del LINKING_FUNCTIONS[_LINKING_FUNCTIONS_AT_IMPORT:]
+
+
+@contextmanager
+def _use_linking_functions(functions):
+    """Inside the `with` block the global list holds exactly `functions`; afterwards
+    it holds again whatever it held before. Used around every simulate() call."""
+    saved = list(LINKING_FUNCTIONS)
+    LINKING_FUNCTIONS[:] = functions
+    try:
+        yield
+    finally:                         # restore even if simulate() raises
+        LINKING_FUNCTIONS[:] = saved
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +335,10 @@ class UIFOProblem(OpticalSetupProblem):
         self._topology_string = None  # computed lazily or set below
         self._bounds_overrides = bounds_overrides
 
+        # Start this problem's formulas at position 0: empty the global list before
+        # anything is built (safe: earlier UIFOProblems carry their own copy).
+        _reset_linking_functions()
+
         ### Calculate the target sensitivity using Voyager reference ###
         # -------------------------------------------------------------#
 
@@ -292,18 +346,34 @@ class UIFOProblem(OpticalSetupProblem):
         from differometor.setups import voyager
 
         # use a predefined Voyager setup with three different modulations for reference
+        _t = time.time()
         q_setup, _ = voyager(mode="space_modulation")
+        _print_time("voyager (space_modulation)", _t)
+        _t = time.time()
         ampl_setup, _ = voyager(mode="amplitude_modulation")
+        _print_time("voyager (amplitude_modulation)", _t)
+        _t = time.time()
         freq_setup, _ = voyager(mode="frequency_modulation")
+        _print_time("voyager (frequency_modulation)", _t)
         reference_setups = [q_setup, ampl_setup, freq_setup]
 
         # choose a sensitivity function that calculates sensitivities taking into account the three noise sources
         self._sensitivity_function = sensitivity_qamplfreq_noise
 
-        # simulate the reference setups
-        simulation_results = run_setups(reference_setups, self._frequencies)
+        
+        
+        # todo: figure out is it the same for multiple seeds because we have the cache hit
+        # print(f"reference_setups: {reference_setups}")
+        # print(f"self._frequencies: {self._frequencies}")
+
+        # simulate the reference setups; cached per (setups, frequencies), see uifo_cache.py
+        _t = time.time()
+        simulation_results, _hit = cached_run_setups(reference_setups, self._frequencies)
+        _print_time(f"run_setups (Voyager reference, cache {'hit' if _hit else 'miss'})",
+                    _t, simulation_results)
 
         # calculate the sensitivity values taking into account the three noise sources
+        _t = time.time()
         self._target_sensitivities = calculate_sensitivities(
             simulation_results,
             self._sensitivity_function,
@@ -311,10 +381,12 @@ class UIFOProblem(OpticalSetupProblem):
             True,
             signal_floor,
         )
+        _print_time("calculate_sensitivities (Voyager reference)", _t, self._target_sensitivities)
 
         ### Create UIFO setup ###
         # -----------------------#
 
+        _t = time.time()
         if has_seed:
             # Generate topology from seed
             q_noise_setup, component_property_pairs, centers, boundaries = uifo(
@@ -334,19 +406,24 @@ class UIFOProblem(OpticalSetupProblem):
                 centers=centers,
                 boundaries=boundaries,
             )
+        _print_time("uifo (q, space_modulation)", _t)
 
+        _t = time.time()
         ampl_noise_setup, _ = uifo(
             size=size,
             mode="amplitude_modulation",
             centers=centers,
             boundaries=boundaries,
         )
+        _print_time("uifo (amplitude_modulation)", _t)
+        _t = time.time()
         freq_noise_setup, _ = uifo(
             size=size,
             mode="frequency_modulation",
             centers=centers,
             boundaries=boundaries,
         )
+        _print_time("uifo (frequency_modulation)", _t)
 
         self._setup = [q_noise_setup, ampl_noise_setup, freq_noise_setup]
         self._centers = centers
@@ -389,9 +466,11 @@ class UIFOProblem(OpticalSetupProblem):
         )
 
         # couple vertical and horizontal spaces at same positions, so that the grid structure of the uifo is always preserved
+        _t = time.time()
         self._optimization_pairs = constrain_inter_grid_cell_spaces(
             component_property_pairs, optimized_properties
         )
+        _print_time("constrain_inter_grid_cell_spaces", _t)
 
         # calculate the bounds for the properties to be optimized
         lower_bounds = []
@@ -405,24 +484,34 @@ class UIFOProblem(OpticalSetupProblem):
         self._bounds = np.array([lower_bounds, upper_bounds])
 
         # build the three modulation setups and store as instance attributes
+        _t = time.time()
         self._q_arrays, *self._q_metadata = run_build_step(
             self._setup[0],
             [("f", "frequency")],
             self._frequencies,
             self._optimization_pairs,
         )
+        _print_time("run_build_step (q)", _t, self._q_arrays)
+        _t = time.time()
         self._ampl_arrays, *self._ampl_metadata = run_build_step(
             self._setup[1],
             [("f", "frequency")],
             self._frequencies,
             self._optimization_pairs,
         )
+        _print_time("run_build_step (ampl)", _t, self._ampl_arrays)
+        _t = time.time()
         self._freq_arrays, *self._freq_metadata = run_build_step(
             self._setup[2],
             [("f", "frequency")],
             self._frequencies,
             self._optimization_pairs,
         )
+        _print_time("run_build_step (freq)", _t, self._freq_arrays)
+
+        # All builds of this problem are done (Voyager reference + 3 topology setups):
+        # the global list now holds exactly the formulas its arrays point to. Keep a copy.
+        self._linking_functions = list(LINKING_FUNCTIONS)
 
         self._build_objective_function()
 
@@ -439,21 +528,33 @@ class UIFOProblem(OpticalSetupProblem):
         ``objective_function`` and ``objective_function_aux`` so the two
         stay in sync after ``_build_objective_function`` re-traces them.
         """
-        q_results = simulate(
-            **{**self._q_arrays, "optimized_parameters": optimized_parameters}
-        )
-        ampl_results = simulate(
-            **{**self._ampl_arrays, "optimized_parameters": optimized_parameters}
-        )
-        freq_results = simulate(
-            **{**self._freq_arrays, "optimized_parameters": optimized_parameters}
-        )
+        # TIMING: this body runs inside jax.jit, so these timers measure TRACING only
+        # (building the graph). They print once per compile, not on every evaluation,
+        # and nothing can be waited on here (the values are placeholders, not numbers).
+        # simulate() reads the global formula list here: give it this problem's copy.
+        with _use_linking_functions(self._linking_functions):
+            _t = time.time()
+            q_results = simulate(
+                **{**self._q_arrays, "optimized_parameters": optimized_parameters}
+            )
+            _print_time("simulate (q) [trace]", _t)
+            _t = time.time()
+            ampl_results = simulate(
+                **{**self._ampl_arrays, "optimized_parameters": optimized_parameters}
+            )
+            _print_time("simulate (ampl) [trace]", _t)
+            _t = time.time()
+            freq_results = simulate(
+                **{**self._freq_arrays, "optimized_parameters": optimized_parameters}
+            )
+            _print_time("simulate (freq) [trace]", _t)
         results = [
             (*q_results, *self._q_metadata),
             (*ampl_results, *self._ampl_metadata),
             (*freq_results, *self._freq_metadata),
         ]
 
+        _t = time.time()
         sensitivities = calculate_sensitivities(
             results,
             self._sensitivity_function,
@@ -461,7 +562,10 @@ class UIFOProblem(OpticalSetupProblem):
             self._homodyne,
             self._signal_floor,
         )
+        _print_time("calculate_sensitivities [trace]", _t)
+        _t = time.time()
         powers = calculate_powers(q_results[0], *self._q_metadata)
+        _print_time("calculate_powers [trace]", _t)
         sensitivity_loss, penalty, violations = self._calculate_loss(
             sensitivities, self._target_sensitivities, powers
         )
@@ -576,16 +680,18 @@ class UIFOProblem(OpticalSetupProblem):
         Returns:
             Sensitivity values at each frequency point.
         """
-        # simulate the three modulation setups
-        q_results = simulate(
-            **{**self._q_arrays, "optimized_parameters": optimized_parameters}
-        )
-        ampl_results = simulate(
-            **{**self._ampl_arrays, "optimized_parameters": optimized_parameters}
-        )
-        freq_results = simulate(
-            **{**self._freq_arrays, "optimized_parameters": optimized_parameters}
-        )
+        # simulate the three modulation setups (not via _eval_core, so it needs the
+        # same swap of the formula list; called e.g. by core/storage/exporter.py:226)
+        with _use_linking_functions(self._linking_functions):
+            q_results = simulate(
+                **{**self._q_arrays, "optimized_parameters": optimized_parameters}
+            )
+            ampl_results = simulate(
+                **{**self._ampl_arrays, "optimized_parameters": optimized_parameters}
+            )
+            freq_results = simulate(
+                **{**self._freq_arrays, "optimized_parameters": optimized_parameters}
+            )
         results = [
             (*q_results, *self._q_metadata),
             (*ampl_results, *self._ampl_metadata),
