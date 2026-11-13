@@ -24,7 +24,7 @@ def _print_time(label, t0, out=None):
     print(f"[uifo timing] {label}: {time.time() - t0:.3f} s", flush=True)
 
 from ..base_problem import DEFAULT_SIGNAL_FLOOR, OpticalSetupProblem, register_problem
-from .uifo_cache import cached_run_setups
+from .uifo_cache import cached_target_sensitivities
 
 
 # ---------------------------------------------------------------------------
@@ -366,22 +366,24 @@ class UIFOProblem(OpticalSetupProblem):
         # print(f"reference_setups: {reference_setups}")
         # print(f"self._frequencies: {self._frequencies}")
 
-        # simulate the reference setups; cached per (setups, frequencies), see uifo_cache.py
+        # simulate the reference setups (run_setups) and calculate their sensitivities,
+        # taking into account the three noise sources. Same for every seed, so it is
+        # cached in memory and, if DFBENCH_CACHE_DIR is set, on disk (uifo_cache.py).
         _t = time.time()
-        simulation_results, _hit = cached_run_setups(reference_setups, self._frequencies)
-        _print_time(f"run_setups (Voyager reference, cache {'hit' if _hit else 'miss'})",
-                    _t, simulation_results)
-
-        # calculate the sensitivity values taking into account the three noise sources
-        _t = time.time()
-        self._target_sensitivities = calculate_sensitivities(
-            simulation_results,
-            self._sensitivity_function,
+        self._target_sensitivities, _source = cached_target_sensitivities(
+            reference_setups,
             self._frequencies,
-            True,
+            self._sensitivity_function,
             signal_floor,
+            homodyne=True,
         )
-        _print_time("calculate_sensitivities (Voyager reference)", _t, self._target_sensitivities)
+        _print_time(f"Voyager reference target ({_source})", _t, self._target_sensitivities)
+
+        # Voyager's formulas were only needed inside run_setups (if it ran at all):
+        # its result is plain numbers now. Empty the list again, so the topology's
+        # formulas start at position 0 whether the target was computed, taken from
+        # memory or loaded from disk -> identical programs, compile-cache hits.
+        _reset_linking_functions()
 
         ### Create UIFO setup ###
         # -----------------------#
