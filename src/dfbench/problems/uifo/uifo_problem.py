@@ -319,8 +319,8 @@ class UIFOProblem(OpticalSetupProblem):
         else:
             name = f"uifo_{size}x{size}_custom"
 
-        if has_seed:
-            print(f"UIFOProblem topology seed: {topology_seed}")
+        # if has_seed:
+            # print(f"UIFOProblem topology seed: {topology_seed}")
 
         super().__init__(
             name=name,
@@ -346,15 +346,15 @@ class UIFOProblem(OpticalSetupProblem):
         from differometor.setups import voyager
 
         # use a predefined Voyager setup with three different modulations for reference
-        _t = time.time()
+        # _t = time.time()
         q_setup, _ = voyager(mode="space_modulation")
-        _print_time("voyager (space_modulation)", _t)
-        _t = time.time()
+        # _print_time("voyager (space_modulation)", _t)
+        # _t = time.time()
         ampl_setup, _ = voyager(mode="amplitude_modulation")
-        _print_time("voyager (amplitude_modulation)", _t)
-        _t = time.time()
+        # _print_time("voyager (amplitude_modulation)", _t)
+        # _t = time.time()
         freq_setup, _ = voyager(mode="frequency_modulation")
-        _print_time("voyager (frequency_modulation)", _t)
+        # _print_time("voyager (frequency_modulation)", _t)
         reference_setups = [q_setup, ampl_setup, freq_setup]
 
         # choose a sensitivity function that calculates sensitivities taking into account the three noise sources
@@ -369,7 +369,7 @@ class UIFOProblem(OpticalSetupProblem):
         # simulate the reference setups (run_setups) and calculate their sensitivities,
         # taking into account the three noise sources. Same for every seed, so it is
         # cached in memory and, if DFBENCH_CACHE_DIR is set, on disk (uifo_cache.py).
-        _t = time.time()
+        # _t = time.time()
         self._target_sensitivities, _source = cached_target_sensitivities(
             reference_setups,
             self._frequencies,
@@ -377,7 +377,7 @@ class UIFOProblem(OpticalSetupProblem):
             signal_floor,
             homodyne=True,
         )
-        _print_time(f"Voyager reference target ({_source})", _t, self._target_sensitivities)
+        # _print_time(f"Voyager reference target ({_source})", _t, self._target_sensitivities)
 
         # Voyager's formulas were only needed inside run_setups (if it ran at all):
         # its result is plain numbers now. Empty the list again, so the topology's
@@ -388,7 +388,7 @@ class UIFOProblem(OpticalSetupProblem):
         ### Create UIFO setup ###
         # -----------------------#
 
-        _t = time.time()
+        # _t = time.time()
         if has_seed:
             # Generate topology from seed
             q_noise_setup, component_property_pairs, centers, boundaries = uifo(
@@ -408,24 +408,24 @@ class UIFOProblem(OpticalSetupProblem):
                 centers=centers,
                 boundaries=boundaries,
             )
-        _print_time("uifo (q, space_modulation)", _t)
+        # _print_time("uifo (q, space_modulation)", _t)
 
-        _t = time.time()
+        # _t = time.time()
         ampl_noise_setup, _ = uifo(
             size=size,
             mode="amplitude_modulation",
             centers=centers,
             boundaries=boundaries,
         )
-        _print_time("uifo (amplitude_modulation)", _t)
-        _t = time.time()
+        # _print_time("uifo (amplitude_modulation)", _t)
+        # _t = time.time()
         freq_noise_setup, _ = uifo(
             size=size,
             mode="frequency_modulation",
             centers=centers,
             boundaries=boundaries,
         )
-        _print_time("uifo (frequency_modulation)", _t)
+        # _print_time("uifo (frequency_modulation)", _t)
 
         self._setup = [q_noise_setup, ampl_noise_setup, freq_noise_setup]
         self._centers = centers
@@ -468,11 +468,11 @@ class UIFOProblem(OpticalSetupProblem):
         )
 
         # couple vertical and horizontal spaces at same positions, so that the grid structure of the uifo is always preserved
-        _t = time.time()
+        # _t = time.time()
         self._optimization_pairs = constrain_inter_grid_cell_spaces(
             component_property_pairs, optimized_properties
         )
-        _print_time("constrain_inter_grid_cell_spaces", _t)
+        # _print_time("constrain_inter_grid_cell_spaces", _t)
 
         # calculate the bounds for the properties to be optimized
         lower_bounds = []
@@ -486,30 +486,30 @@ class UIFOProblem(OpticalSetupProblem):
         self._bounds = np.array([lower_bounds, upper_bounds])
 
         # build the three modulation setups and store as instance attributes
-        _t = time.time()
+        # _t = time.time()
         self._q_arrays, *self._q_metadata = run_build_step(
             self._setup[0],
             [("f", "frequency")],
             self._frequencies,
             self._optimization_pairs,
         )
-        _print_time("run_build_step (q)", _t, self._q_arrays)
-        _t = time.time()
+        # _print_time("run_build_step (q)", _t, self._q_arrays)
+        # _t = time.time()
         self._ampl_arrays, *self._ampl_metadata = run_build_step(
             self._setup[1],
             [("f", "frequency")],
             self._frequencies,
             self._optimization_pairs,
         )
-        _print_time("run_build_step (ampl)", _t, self._ampl_arrays)
-        _t = time.time()
+        # _print_time("run_build_step (ampl)", _t, self._ampl_arrays)
+        # _t = time.time()
         self._freq_arrays, *self._freq_metadata = run_build_step(
             self._setup[2],
             [("f", "frequency")],
             self._frequencies,
             self._optimization_pairs,
         )
-        _print_time("run_build_step (freq)", _t, self._freq_arrays)
+        # _print_time("run_build_step (freq)", _t, self._freq_arrays)
 
         # All builds of this problem are done (Voyager reference + 3 topology setups):
         # the global list now holds exactly the formulas its arrays point to. Keep a copy.
@@ -535,28 +535,28 @@ class UIFOProblem(OpticalSetupProblem):
         # and nothing can be waited on here (the values are placeholders, not numbers).
         # simulate() reads the global formula list here: give it this problem's copy.
         with _use_linking_functions(self._linking_functions):
-            _t = time.time()
+            # _t = time.time()
             q_results = simulate(
                 **{**self._q_arrays, "optimized_parameters": optimized_parameters}
             )
-            _print_time("simulate (q) [trace]", _t)
-            _t = time.time()
+            # _print_time("simulate (q) [trace]", _t)
+            # _t = time.time()
             ampl_results = simulate(
                 **{**self._ampl_arrays, "optimized_parameters": optimized_parameters}
             )
-            _print_time("simulate (ampl) [trace]", _t)
-            _t = time.time()
+            # _print_time("simulate (ampl) [trace]", _t)
+            # _t = time.time()
             freq_results = simulate(
                 **{**self._freq_arrays, "optimized_parameters": optimized_parameters}
             )
-            _print_time("simulate (freq) [trace]", _t)
+            # _print_time("simulate (freq) [trace]", _t)
         results = [
             (*q_results, *self._q_metadata),
             (*ampl_results, *self._ampl_metadata),
             (*freq_results, *self._freq_metadata),
         ]
 
-        _t = time.time()
+        # _t = time.time()
         sensitivities = calculate_sensitivities(
             results,
             self._sensitivity_function,
@@ -564,10 +564,10 @@ class UIFOProblem(OpticalSetupProblem):
             self._homodyne,
             self._signal_floor,
         )
-        _print_time("calculate_sensitivities [trace]", _t)
-        _t = time.time()
+        # _print_time("calculate_sensitivities [trace]", _t)
+        # _t = time.time()
         powers = calculate_powers(q_results[0], *self._q_metadata)
-        _print_time("calculate_powers [trace]", _t)
+        # _print_time("calculate_powers [trace]", _t)
         sensitivity_loss, penalty, violations = self._calculate_loss(
             sensitivities, self._target_sensitivities, powers
         )

@@ -1,3 +1,7 @@
+# NOT ACTIVE FILE, NOT USED ANYWHERE
+# SERVED FOR DESIGN-RELATED PURPOSES
+# SHOULD BE DELETED IN THE FUTURE IF NOT USED
+
 from dataclasses import dataclass
 # from differometer.uifo ...
 
